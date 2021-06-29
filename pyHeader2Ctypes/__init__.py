@@ -9,7 +9,8 @@ class CElements:
     typedict = {   # 类型转换字典
         'VIM_U32':'c_uint', 'VIM_BOOL':'c_uint', 'VIM_U8':'c_uint', 'VIM_CHAR':'c_uint', 'VIM_S32':'c_uint', 'VIM_FR32':'c_uint', 'VIM_VOID*':'c_void_p',
         'VIM_DOUBLE':'c_double', 'VIM_FLOAT':'c_float', 'VIM_U64':'c_longlong','VIM_U16':'c_uint',
-        'unsigned':'c_uint',
+        'unsignedlong':'c_long',  # 由于解析方法的原因，unsigned long在这里写法需要去掉空格
+        'unsignedint': 'c_uint',
         'VI_CHN':'c_uint', '__u32':'c_uint', '__s32':'c_uint'
     }
     macrodict = {} # 宏定义转换字典，暂未使用
@@ -43,7 +44,7 @@ class CElements:
     
     
     # 查找元素的表达式
-    pattern = re.compile('(?!//)[\t ]*((?:typedef)?[\t| ]*(?:struct|union|enum)[\t \n]*\w*[\t \n]*{.*?}[A-Z0-9_\[\] ,*]*;)',re.DOTALL)
+    pattern = re.compile('(?<!//)[\t ]*((?:typedef)?[\t| ]*(?:struct|union|enum)[\t \n]*\w*[\t \n]*{.*?}[A-Z0-9_\[\] ,*]*;)',re.DOTALL)
     pattern_ex1 = re.compile('(?<!//|/\*)[\t ]*(?:typedef)?[\t ]*(?:struct|union|enum)[\t ]+[a-zA-Z0-9_]+[\t ]+[\w*\[\]]+;')
     pattern_name = re.compile('}[\t ]*?([A-Z0-9_]+[\t ]*\*?)[\t ]*[;,]',re.DOTALL) 
     pattern_name_ex1 = re.compile('([\w\[\]]+)[\t ]*[;,]')
@@ -51,7 +52,7 @@ class CElements:
     pattern_type_name = re.compile('(?:typedef)?[\t ]*(?:struct|union|enum)[\t ]+(\w+)')
     pattern_text = re.compile('{(.*)}',re.DOTALL)
     pattern_macro = re.compile('#define[\t ]+(\w+)[\t ]+([\dxa-fA-F]+)')
-    pattern_anonymous_union = re.compile('(?!//|ef|/\*)[\t ]+((?:union|struct|enum)[ \t\n]*{.*?}[\w\t ]*;)',re.DOTALL)
+    pattern_anonymous_union = re.compile('(?<!//|ef|/\*)[\t ]+(?:union|struct|enum)[ \t\n]*{.*?}[\w\t ,\[\]0-9\*]*;',re.DOTALL)
 
     def FindElements(self,headerText):
         ## 找到所有固定值的宏，将宏名称直接替换为值，此处只做替换并未保存
@@ -63,8 +64,11 @@ class CElements:
         for union in anonymous_union:
             tmpitem = {}
             while True:# random error(same val) may cause potentional infinite recycle
-                name_prefix = union.strip()[0:5].replace('\n','').replace('\t','').replace(' ','')
-                tmpitem['name'] = (name_prefix + '_' + str(random.random())[3:7]).upper()
+                name_prefix = union.strip()[0:5].replace('\n','').replace('\t','').replace(' ','').replace('{','').replace('}','')
+                try:
+                    tmpitem['name'] = self.pattern_name.findall(union)[0]  # unsupport array naming: xxxx[n]
+                except IndexError:
+                    tmpitem['name'] = (name_prefix + '_' + str(random.random())[3:7]).upper()
                 tmpval = self.typedict.get(tmpitem['name'])
                 if tmpval == None:
                     self.typedict[tmpitem['name']] = 'PY_' + tmpitem['name']
@@ -144,9 +148,9 @@ class CElements:
 
     # 解析一个Struct或Union元素中的内容，即解析其成员。
     def ParseStruct(self,text): # also works for Union  由于struct和union成员内容的格式类似，所以都使用此函数
-        pattern_name = re.compile('([\w\*]+)[0-9\[\] _A-Z]*;')
+        pattern_name = re.compile('([\w]+)[0-9\[\] _A-Z]*;')
         pattern_number = re.compile('\[([0-9A-Z_]*)\]')
-        pattern_type = re.compile('\w+[\t ]*\*?')
+        pattern_type = re.compile('[\w\t ]+')
         pattern_comment = re.compile('(?://|/\*)[\t ]*(.+)\*?/?')
         item = []
         members = text.split('\n')
@@ -164,6 +168,7 @@ class CElements:
                     if headchar == '//' or headchar == '/*':
                         continue
                     tmpitem['name'] = pattern_name.findall(member)[0]
+                    member = member.replace(tmpitem['name'],'')
                 except IndexError:
                     print('\n以下字符未被解析，如果没有使用可以忽略：\n',member)
                     continue
@@ -233,8 +238,8 @@ class CElements:
         includeText = self.LoadFromDir(self.cur_dir + os.sep + 'include')
         unknow_items = copy.copy(self.unknow_items)
         for unknow_item in unknow_items:
-            pattern_include_item = re.compile('(?:struct|union|enum)[\t ]+' + unknow_item + '[\t \n]*{.*?}(?![\t ]+)[\w\t \n]*;',re.DOTALL)
-            pattern_include_item1 = re.compile('(?:struct|union|enum)[\t ]*\w*[\t \n]*{.*?}(?![\t ]+)'+ unknow_item +'[\t \n]*;',re.DOTALL)
+            pattern_include_item = re.compile('(?:struct|union|enum)[\t ]+' + unknow_item + '[\t \n]*{.*?(?<!\t| )}[\w\t \n]*;',re.DOTALL)
+            pattern_include_item1 = re.compile('(?:struct|union|enum)[\t ]*\w*[\t \n]*{.*?}[\t ]*'+ unknow_item +'[\t \n]*;',re.DOTALL)
             include_items = pattern_include_item.findall(includeText)
             include_items += pattern_include_item1.findall(includeText)
             if len(include_items) == 1:
@@ -267,7 +272,7 @@ class CElements:
         result = 'from ctypes import *\n\n'
         for item in self.items:
             if item['type'] == 'enum':
-                result = result + 'class ' + 'PY_' + item['name'] + '(c_uint):\n'
+                result = result + 'class ' + 'PY_' + item['name'] + '():\n'
                 memberliststr = indentStr + 'list = iter([ '
                 for member in item['members']:
                     result = result + indentStr + member['name'] + ' = ' + str(member['val']) 
@@ -278,7 +283,10 @@ class CElements:
                     result += '\n'
                 result = result + memberliststr + '])\n' + indentStr + 'def __iter__(self):\n' + indentStr*2 + 'return self.list\n\n'
             elif item['type'] == 'struct' or item['type'] == 'union':
-                result = result + 'class ' + self.typedict[item['name']] + '(Structure):\n'
+                parentclass = 'Structure'
+                if item['type'] == 'union':
+                    parentclass = 'Union'
+                result = result + 'class ' + self.typedict[item['name']] + '(' + parentclass +'):\n'
                 anonystr = indentStr + '_anonymous_=('
                 memberstr = indentStr + '_fields_=[\n'
                 memberno = 0
@@ -286,13 +294,15 @@ class CElements:
                 for member in item['members']:
                     memberno += 1
                     memberstr = memberstr + indentStr + '(\'' + member['name'] + '\','
+                    memtype = ''
                     try:
                         memtype = self.typedict[member['type']]
                         if member['type'][0:5] == 'UNION':
                             anonyno += 1
                             anonystr =  anonystr + '\'' + member['name'] + '\', '
                     except KeyError:
-                        print('[输出文档]未知类型：',member['type'],'，暂用名称：','PY_'+member['type'])
+                        memtype = 'PY_'+member['type']
+                        print('[输出文档]未知类型：',member['type'],'，暂用名称：',memtype)
                     number = member.get('number')
                     if number is not None:
                         for n in reversed(number):
@@ -313,6 +323,6 @@ class CElements:
                     result += anonystr
                 result = result + memberstr + '\n'
         for unknow_item in self.unknow_items:
-            print('[输出文档]仍未找到定义：',unknow_item)
+            print('[输出文档]未找到定义：',unknow_item)
         with open(filename,'w',encoding='utf-8') as outfile:
             outfile.write(result)

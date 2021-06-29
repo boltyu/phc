@@ -7,7 +7,7 @@ if __name__ == '__main__':
     dirname = './tests'
     try:
         dirname = sys.argv[1]
-    except KeyError:
+    except IndexError:
         pass
     celements = pyHeader2Ctypes.CElements(dirname)
     celements.ParseMembers()
