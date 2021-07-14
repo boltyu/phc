@@ -6,226 +6,248 @@ import copy
 indentStr = '    ' # 缩进字符默认使用四个空格
 
 class CElements:
-    typedict = {   # 类型转换字典
-        'VIM_U32':'c_uint', 'VIM_BOOL':'c_uint', 'VIM_U8':'c_uint', 'VIM_CHAR':'c_uint', 'VIM_S32':'c_uint', 'VIM_FR32':'c_uint', 'VIM_VOID*':'c_void_p',
-        'VIM_DOUBLE':'c_double', 'VIM_FLOAT':'c_float', 'VIM_U64':'c_longlong','VIM_U16':'c_uint',
+    __typedict = {   # 类型转换字典
+        'VIM_U32':'c_uint', 'VIM_BOOL':'c_uint', 'VIM_U8':'c_byte', 'VIM_CHAR':'c_byte', 'VIM_S32':'c_int', 'VIM_FR32':'c_uint', 'VIM_VOID*':'c_void_p',
+        'VIM_DOUBLE':'c_double', 'VIM_FLOAT':'c_float', 'VIM_U64':'c_longlong','VIM_U16':'c_short',
         'unsigned long':'c_long',
         'unsigned int': 'c_uint',
-        'VI_CHN':'c_uint', '__u32':'c_uint', '__s32':'c_uint'
+        'VI_CHN':'c_uint', '__u32':'c_uint', '__s32':'c_uint',
+        'VB_POOL':'c_uint',
+        'VIM_CHAR*':'c_char_p',
+        'VIM_U8*':'c_char_p',
+        'void*':'c_void_p'
     }
-    macrodict = {} # 宏定义转换字典，暂未使用
-    items = [] # items包含了从文件中识别到的所有struct union enum
-    unknow_items = set() # 类型未知/定义未找到的struct union enum的名称
-    
-    cur_dir = ''
+    __items = [] # items包含了从文件中识别到的所有struct union enum
+    __unknow_items = set() # 类型未知/定义未找到的struct union enum的名称
+    __tbd_items = set() 
 
-    def FormatDocument(self,text):
-        pattern_comment1 = re.compile('//.*')
-        pattern_comment2 = re.compile('/\*.*?\*/',re.DOTALL)
-        textlen = len(text)
-        newText = ''
-        for pattern in [pattern_comment1,pattern_comment2]: # remove comment
-            textpos = 0
-            while textpos < textlen:
-                comment = pattern.search(text,textpos)
-                if comment is None:
-                    newText += text[textpos:]
-                    break
-                newText += text[textpos:comment.start()]
-                textpos = comment.end()
-            text = copy.copy(newText)
-            newText = ''
+    __warn_msg = ''
+    __err_msg = ''
+
+    def __WarnMsgAppend(self,*arg):
+        for i in arg:
+            if type(i) == str:
+                self.__warn_msg += i
+            else:
+                self.__warn_msg += i.strerror
+        self.__warn_msg += '\n'
+
+    def __FormatDocument(self,text):
+        if text is None:
+            return None
+        pattern_comment = re.compile('#.*\n')
+        comments = pattern_comment.findall(text)
+        for comment in comments:
+            text = text.replace(comment,'')
         newText = ''
         text = text.replace('\t',' ')
         for t in text.split(' '):       # replace multi-space with one space
             if t != '':
                 newText = newText + t + ' '
         return newText
-    def LoadFromDir(self,directory):
+    def __LoadFromDir(self,directory):
         headerText = ''
         dir_current = directory
         filecount = 0
+        cmd_preprocess = 'clang -E '
         for filename in os.listdir(dir_current):
             if filename[-2:] == '.h':           # 删除此行将不筛选.h文件
                 filename = dir_current + os.sep + filename
+                cmd_preprocess += filename + ' '
                 filecount += 1
-                try:
-                    with open(filename,'r',encoding='utf-8') as f:
-                        headerText += f.read(1024*1000*10)
-                except UnicodeDecodeError as e:
-                    with open(filename,'r',encoding='gbk') as f:
-                        headerText += f.read(1024*1000*10)
-                except Exception as e:
-                    print(e)
-                    exit(0)
+        cmd_preprocess += '> total.h'
         if filecount == 0 :
-            print(directory,"中没有找到.h文件")
-            exit(0)
-
-        return self.FormatDocument(headerText)
-    
-    
-    # 查找元素的表达式
-    pattern = re.compile('(?:struct|union|enum)[ \n]*\w*[ \n]*{.*?}[A-Z0-9_\[\] ,*]*;',re.DOTALL)
-    pattern_ex1 = re.compile('typedef[ ]*(?:struct|union|enum)[ ]+[a-zA-Z0-9_]+[ ]+[\w*\[\]]+;')
-    pattern_name = re.compile('}[ ]*?([A-Z0-9_]+[ ]*\*?)[ ]*[;,]',re.DOTALL) 
-    pattern_name_ex1 = re.compile('([\w\[\]]+)[ ]*[;,]')
-    pattern_type = re.compile('(struct|union|enum)[\w \n]*{')
-    pattern_type_name = re.compile('(?:struct|union|enum)[ ]+(\w+)')
-    pattern_text = re.compile('{(.*)}',re.DOTALL)
-    pattern_macro = re.compile('#define[ ]+(\w+)[ ]+([\dxa-fA-F]+)')
-    pattern_anonymous_union = re.compile('(?<!\w\w|f )(?:union|struct|enum)[ \n]*{.*?}[\w ,\[\]0-9\*]*;',re.DOTALL)
-
-    def FindElements(self,headerText):
-        ## 找到所有固定值的宏，将宏名称直接替换为值，此处只做替换并未保存
-        macros = self.pattern_macro.findall(headerText)
-        for name,val in macros:
-            headerText = headerText.replace(name,val)
-        ## 先检查所有匿名的Union和Struct，将其随机命。   查找格式为     struct{...}...;
-        anonymous_union = self.pattern_anonymous_union.findall(headerText)
-        for union in anonymous_union:
-            item = {}
-            errorcount = 0
-            while True:# random error(same val) may cause potentional infinite recycle
-                errorcount += 1
-                if errorcount > 10:
-                    print(union[:100],'\n......\n',union[-100:],'\n以上解析有误,headerText保存至error.txt')
-                    with open('error.txt','w') as f:
-                        f.write(headerText)
-                    exit(0)
-                name_prefix = union.strip()[0:5].replace('\n','').replace(' ','').replace('{','').replace('}','')
-                try:
-                    item['name'] = self.pattern_name.findall(union)[0]  # unsupport array naming: xxxx[n]
-                except IndexError:
-                    item['name'] = (name_prefix + '_' + str(random.random())[3:7]).upper()
-                tmpval = self.typedict.get(item['name'])
-                if tmpval == None:
-                    self.typedict[item['name']] = 'PY_' + item['name']
-                    item['type'] = name_prefix
-                    item['text'] = self.pattern_text.findall(union)[0]
-                    if item['type'] == 'enum':
-                        self.typedict[item['name']] = 'c_uint'
-                        item['members'] = self.ParseEnum(item['text'])
-                    else:
-                        item['members'] = self.ParseStruct(item['text'])
-                    self.items.insert(0,item)
-                    # self.items[item['name']] = item 
-                    headerText = headerText.replace(union,item['name'] + ' ' + item['name'].lower() + ';')
-                    break
-        ## 其次检查所有命名的Struct和Union和       typedef struct $STRUCT_NAME {} $INST_NAME;           
-        elementList = self.pattern.findall(headerText)
-        for element in elementList:
-            item = {}
-            item['type'] = self.pattern_type.findall(element)[0]
-            try:
-                item['text'] = self.pattern_text.findall(element)[0]
-            except IndexError:
-                continue
-            try:
-                item['name'] = self.pattern_type_name.findall(element)[0]
-                self.typedict[item['name']] = 'PY_' + item['name']
-                self.unknow_items.remove(item['name'])
-            except (IndexError, KeyError):
-                pass
-            try:
-                item['name'] = self.pattern_name.findall(element)[0].replace(' ','')
-                self.typedict[item['name']] = 'PY_' + item['name']
-                self.unknow_items.remove(item['name'])
-            except (IndexError, KeyError):
-                pass
-            if item['type'] == 'enum':
-                self.typedict[item['name']] = 'c_uint'
-            self.items.append(item)  
-            # self.items[item['name']] = item 
-        ## 最后检查所有滞后定义的Struct和Union      struct $STRUCT_NAME $INST_NAME;      # 待解决：滞后定义的typedef struct将使用最先定义的typedef struct的类型名称
-        instance_union = self.pattern_ex1.findall(headerText)
-        pattern_number = re.compile('\[([A-Z_0-9]*)\]')
-        for union in instance_union:
-            tmpnamelist = self.pattern_name_ex1.findall(union)
-            try:
-                typename = self.pattern_type_name.findall(union)[0]
-            except IndexError:
-                print('[查找元素]解析类型错误, 原文: ',union)
-                exit(0)
-            for name in tmpnamelist:
-                item = {}
-                try:
-                    item['number'] = pattern_number.findall(name)
-                    if len(item['number']) > 0:
-                        try:
-                            for i in item['number']:
-                                i = int(i)
-                        except ValueError:
-                            print('[查找元素]不确定的值：',i)
-                    else:
-                        del item['number']
-                except IndexError:
-                    pass
-                try:
-                    item['type'] = self.typedict[typename]
-                    self.typedict[name] = self.typedict[typename]
-                except KeyError:
-                    self.unknow_items.add(typename)
-                    item['type'] = typename
-                    typename = 'PY_' + typename
-                    self.typedict[item['type']] = typename
-                    #item['name'] ???
+            self.__WarnMsgAppend("没有找到.h文件")
+            return None
+        os.system(cmd_preprocess)
+        try:
+            with open('total.h','r',encoding='utf-8') as f:
+                headerText += f.read(1024*1000*10)
+        except UnicodeDecodeError as e:
+            with open('total.h','r',encoding='gbk') as f:
+                headerText += f.read(1024*1000*10)
+        except Exception as e:
+            self.__WarnMsgAppend(e)
+            exit(self.__warn_msg)
+        return self.__FormatDocument(headerText)
 
     # 在初始化函数中，首先查找其所有顶级元素，并保存在item中
     def __init__(self,directory):
-        self.cur_dir = directory
-        headerText = self.LoadFromDir(directory)
-        self.FindElements(headerText)
+        self.__cur_dir = directory
+        headerText = self.__LoadFromDir(directory)
+        if headerText is not None:
+            self.__FindElements(headerText)
 
+    def __FindElements(self,headerText):
+        pattern_element_type = re.compile('(?:typedef)? *(?:enum|struct|union)')
+        pattern_element_keychar = re.compile('[{};]')
+        pattern_element_type_name = re.compile('(enum|struct|union) +(\w*) +([\w,]*) *;')
+        pattern_element_type_type = re.compile('(enum|struct|union) *(\w*)')
+        resultlist = []
+        replaceList = []
+        start,a,b,t = 0,0,0,0
+        def __FormatElements(resultlist):
+            for result in resultlist:
+                item = {}
+                text_type = result.get('type')
+                if text_type is None:   # a instant announced element
+                    try:
+                        t,tn,n= pattern_element_type_name.findall(result['name'])[0]
+                    except IndexError:
+                        self.__WarnMsgAppend('error occured while parsing: ',result['name'])
+                        continue
+                    if ',' in n:
+                        namelist = n.split(',')
+                        for name in namelist:
+                            self.__typedict[name.replace('\t','').strip()] = self.__typedict[tn]
+                    else:
+                        self.__typedict[n] = self.__typedict[tn]
+                    continue
+                item['name'] = result['name']
+                t,tn = '',''
+                if len(result['type']) < 6:
+                    item['type'] = result['type']
+                    item['typename'] = result['typename']
+                else:
+                    try:
+                        t,tn = pattern_element_type_type.findall(result['type'])[0]
+                        item['type'] = t
+                    except IndexError:
+                        self.__WarnMsgAppend('error occured while parsing: ', result['type'])
+                        continue
+                newtype = ''
+                if item['type'] == 'enum':
+                    newtype = 'c_uint'
+                else:
+                    newtype = 'PY_' + item['name']
+                if tn != '':
+                    item['typename'] = tn
+                    self.__typedict[item['typename']] = newtype
+                    self.__typedict[item['name']] = newtype
+                else:
+                    try:
+                        self.__typedict[item['typename']] = 'PY_' + item['typename']
+                    except KeyError:
+                        self.__typedict[item['name']] = newtype
+
+                if item['type'] == 'enum':
+                    item['members'] = self.__ParseEnum(result['content'])
+                else:
+                    item['members'] = self.__ParseStruct(result['content'])
+                try:
+                    self.__unknow_items.remove(item['name'])
+                except KeyError:
+                    pass
+                if item['type'] == 'enum':
+                    self.__items.insert(0,item)
+                else:
+                    self.__items.append(item)
+        while True:
+            un_flag = 0
+            deepth = 0
+            findmode = 0 # 0=start 1=found{ 2=found} 3=found; 4=end
+            try:
+                a,b = pattern_element_type.search(headerText,b).regs[0] # find a new element header
+            except AttributeError as e:
+                # print(e,', NoneType means nothing found or reach the end of file')
+                break
+            start = a
+            item = {}
+            while True:
+                t = b
+                a,b = pattern_element_keychar.search(headerText,b).regs[0]
+                keychar = headerText[a:b]
+                if keychar == '{':
+                    if findmode == 0:
+                        findmode = 1
+                        item['type'] = headerText[start:a].replace('\n',' ').strip()
+                        start_content = b
+                    elif findmode == 1:
+                        deepth += 1
+                    else:
+                        self.__WarnMsgAppend('err occured while parsing:\n',headerText[start:b])
+                        exit(self.__warn_msg) #
+                elif keychar == '}':
+                    if findmode == 0:
+                        self.__WarnMsgAppend('err occured while parsing:\n',headerText[start:b])
+                        exit(self.__warn_msg) # } without {
+                    elif findmode == 1:
+                        if deepth == 0:
+                            item['content'] = headerText[start_content:a]
+                            findmode = 2
+                        else:
+                            deepth = deepth - 1
+                elif keychar == ';':
+                    if findmode == 2:
+                        item['name'] = headerText[t:a].replace('\n',' ').strip()
+                        findmode = 4
+                        break
+                    elif findmode == 0:
+                        item['name'] = headerText[start:b].replace('\n','')
+                        break
+                    else:
+                        un_flag += 1
+                        if un_flag > 10000:
+                            self.__WarnMsgAppend('find element excced max tries')
+                            exit(self.__warn_msg)
+            if item['name'] == '':  # a annoymouns element
+                item['name'] = item['type'][0:1] + '_' + str(random.random())[2:8]
+                item['typename'] = item['name'].upper()
+                replaceList.append((headerText[start:b],item['typename'] + ' ' + item['name'] + ';'))
+            resultlist.append(item)
+        for old,new in replaceList:
+            headerText = headerText.replace(old, new)
+        __FormatElements(resultlist)
+        return headerText
     # 解析一个Struct或Union元素中的内容，即解析其成员。
-    def ParseStruct(self,text): # also works for Union  由于struct和union成员内容的格式类似，所以都使用此函数
-        pattern_name = re.compile('(\w+)[0-9\[\] ]*(?=;)')
-        pattern_number = re.compile('\[([0-9A-Z_]*)\]')
+    def __ParseStruct(self,text): # also works for Union
+        if '{' in text:
+            text = self.__FindElements(text)
+        patter_type_name_number = re.compile('((?:struct|enum|union)? *[\w]*[ \*]*) *(\w*) *([\[\]\(\)\w \+\-\*\/]*) *;') 
+        patter_type_typename = re.compile('(struct|enum|union)? *([\w]*[ \*]*)') 
+        pattern_number = re.compile('[\(\[] *(\w+) *[\)\]]')
         memberlist = []
         members = text.split('\n')
         for member in members:
             member = member.strip()
             if member.isspace() == False and member != '':
                 item = {}
+                typename,name,number = '','',''
                 try:
-                    item['number'] = pattern_number.findall(member)
-                    if len(item['number']) > 0:
-                        try:
-                            for i in item['number']:
-                                member = member.replace('['+i+']','')
-                                i = int(i)
-                        except ValueError:
-                            print('[解析成员]不确定的值：',i)
-                    else:
-                        del item['number']
+                    typename,name,number = patter_type_name_number.findall(member)[0]
+                    basetype,typename = patter_type_typename.findall(typename)[0] # unpack typename like 'struct XXXX xxxx;'
                 except IndexError:
                     pass
-                try:
-                    item['name'] = pattern_name.findall(member)[0]
-                except IndexError:
-                    print('不能解析的句式:',member)
-                    continue
-                try:
-                    item['type'] = member.replace(item['name'],'').replace(';','')
-                    if 'struct' in item['type'] or 'enum' in item['type'] or 'union' in item['type']:
-                        item['type'] = item['type'].replace('union','').replace('enum','').replace('struct','')
-                    item['type'] = ' '.join(item['type'].split()).strip().replace(' *','*')# replace multi-space with one space
-                    if item['type'] not in self.typedict:
-                        if '*' in item['type']:  # 是否因为星号导致类型没找到
-                            self.typedict[item['type']] = 'POINTER(' + self.typedict[item['type'].replace('*','')] + ')'
-                            # item['type'] = item['type'].replace('*','').strip()
-                        else:                       # 如果不是，则认定为未知类型
-                            self.unknow_items.add(item['type'])
-                except IndexError:
-                    print('\n以下字符未被解析，如果没有使用可以忽略：\n',member)
-                    continue
+                numberlist = pattern_number.findall(number.replace(' ',''))
+                if len(numberlist) > 0:
+                    for number in numberlist:
+                        try:
+                            int(number,base=16)
+                        except ValueError:
+                            self.__tbd_items.add(number)
+                    item['number'] = numberlist
+                item['name'] = name.replace(' ','')
+                item['type'] = typename.replace(' ','')
+                if basetype != '':
+                    item['type'] = basetype.replace(' ','') + ' ' + item['type']
+                if item['type'] not in self.__typedict:
+                    if '*' in item['type']:  # 是否因为星号导致类型没找到
+                        typestr = item['type'].replace('*','')
+                        typename = self.__typedict.get(typestr)
+                        if typename is not None:
+                            self.__typedict[item['type']] = 'POINTER(' + typename + ')'
+                        else:
+                            self.__unknow_items.add(item['type'])
+                        # item['type'] = item['type'].replace('*','').strip()
+                    else:                       # 如果不是，则认定为未知类型
+                        self.__unknow_items.add(item['type'])
+               
                 memberlist.append(item)
         return memberlist 
 
     # 解析一个Enum中的所有元素
-    def ParseEnum(self,text):
-        pattern_name = re.compile('([A-Za-z][A-Za-z0-9_]*)=?')
-        pattern_val = re.compile('=[ ]*([0-9]+)[ ]*,')
+    def __ParseEnum(self,text):
+        pattern_name_val = re.compile('([A-Za-z_]\w*)[ =]*([0-9x]*) *,')
         __item_no__ = 0
         members = text.split('\n')
         memberlist = []
@@ -234,71 +256,34 @@ class CElements:
             if member.isspace() == False and member != '':
                 item = {}
                 try:
-                    item['name'] = pattern_name.findall(member)[0]
+                    name,val = pattern_name_val.findall(member)[0]
                 except IndexError:
-                    if not member.isspace() and member != '':
-                        print('不能解析的Enum成员:',member)
                     continue
+                item['name'] = name
                 try:
-                    item['val'] = int(pattern_val.findall(member)[0])
+                    if 'x' in val:
+                        item['val'] = int(val, base=16)
+                    else:
+                        item['val'] = int(val)
                     __item_no__ = item['val']
-                except IndexError:
+                except ValueError:
                     item['val'] = __item_no__
                 memberlist.append(item)
                 __item_no__ += 1
         return memberlist
-    # 此函数开始解析items中所有元素的成员内容，如果不执行此函数，元素的成员内容仍以text的形式保存在['text']键中
-    def ParseMembers(self):
-        for item in self.items:
-            if item['type'] == 'struct':
-                item['members'] = self.ParseStruct(item['text'])
-            elif item['type'] == 'union':
-                item['members'] = self.ParseStruct(item['text'])
-            elif item['type'] == 'enum':
-                item['members'] = self.ParseEnum(item['text'])
-        # 从includeText查找剩余未定义元素
-        includeText = self.LoadFromDir(self.cur_dir + os.sep + 'include')
-        unknow_items = copy.copy(self.unknow_items)
-        for unknow_item in unknow_items:
-            pattern_include_item = re.compile('(?:struct|union|enum) .*' + unknow_item + '[\w\n ]*{.*}[\w \n]*;',re.DOTALL)
-            pattern_include_item1 = re.compile('(?:struct|union|enum)[\n ]*{.*} ?' + unknow_item + ' ?;',re.DOTALL)
-            pattern_include_item3 = re.compile('(?:typedef )?(?:struct|union|enum).*?(?<! )}.*?;',re.DOTALL)
-            pattern_result = pattern_include_item3.findall(includeText)
-            resultlist = []
-            for i in pattern_result:
-                if len(pattern_include_item.findall(i)) > 0 or len(pattern_include_item1.findall(i)) > 0:
-                    resultlist.append(i)
-            if len(resultlist) == 1:
-                self.FindElements(resultlist[0])
-            elif len(resultlist) == 0: 
-                pass
-            else:
-                print(unknow_item,'匹配到多项:')
-                for i in resultlist:
-                    print(i[:100],'......',i[-100:])
-                exit(0)
-        # 下面的内容冗余，待完善
-        for item in self.items:
-            if item['type'] == 'struct':
-                try:
-                    item['members']
-                except KeyError:
-                    item['members'] = self.ParseStruct(item['text'])
-            elif item['type'] == 'union':
-                try:
-                    item['members']
-                except KeyError:
-                    item['members'] = self.ParseStruct(item['text'])
-            elif item['type'] == 'enum':
-                try:
-                    item['members']
-                except KeyError:
-                    item['members'] = self.ParseEnum(item['text'])
-           
+    
     # 将items内容输出为.py文件
     def DumpToFile(self,filename):
-        result = 'from ctypes import *\n\n'
-        for item in self.items:
+        # https://www.python.org/dev/peps/pep-0263/
+        result = '#!/usr/bin/python\n# -*- coding: <utf-8> -*-\n\nfrom ctypes import *\n\n' 
+        self.__WarnMsgAppend('【未找到定义】')
+        for unknow_item in self.__unknow_items:
+            self.__WarnMsgAppend(unknow_item)
+        self.__WarnMsgAppend('\n\n【不确定的值】')
+        for tbd_item in self.__tbd_items:
+            self.__WarnMsgAppend(tbd_item)
+        result += '\'\'\'\n' + self.__warn_msg  + '\n\'\'\'\n\n'
+        for item in self.__items:
             if item['type'] == 'enum':
                 result = result + 'class ' + 'PY_' + item['name'] + '():\n'
                 memberliststr = indentStr + 'list = iter([ '
@@ -309,28 +294,34 @@ class CElements:
                     if comment is not None:
                         result = result + '    # ' + comment
                     result += '\n'
-                result = result + memberliststr + '])\n' + indentStr + 'def __iter__(self):\n' + indentStr*2 + 'return self.list\n\n'
+                result = result + memberliststr + '])\n' + indentStr + 'def __iter__(self):\n' + indentStr*2 + 'return self.__list\n\n'
             elif item['type'] == 'struct' or item['type'] == 'union':
                 parentclass = 'Structure'
                 if item['type'] == 'union':
                     parentclass = 'Union'
-                result = result + 'class ' + self.typedict[item['name']] + '(' + parentclass +'):\n'
+                try:
+                    result = result + 'class ' + self.__typedict[item['name']] + '(' + parentclass +'):\n'
+                except KeyError:
+                    result = result + 'class ' + self.__typedict[item['typename']] + '(' + parentclass +'):\n'
                 anonystr = indentStr + '_anonymous_=('
                 memberstr = indentStr + '_fields_=[\n'
                 memberno = 0
                 anonyno = 0
                 for member in item['members']:
+                    if member['name'] == '' or member['type'] == '':
+                        continue
+                    member['name'] = member['name'].replace(' ','_')
                     memberno += 1
                     memberstr = memberstr + indentStr + '(\'' + member['name'] + '\','
                     memtype = ''
                     try:
-                        memtype = self.typedict[member['type']]
-                        if member['type'][0:5] == 'UNION':
+                        memtype = self.__typedict[member['type']]
+                        if len(member['type']) == 6 and member['type'][1] == '_':
                             anonyno += 1
                             anonystr =  anonystr + '\'' + member['name'] + '\', '
                     except KeyError:
                         memtype = 'PY_'+member['type']
-                        # print('[输出文档]未知类型：',member['type'],'暂用名称',memtype)
+                        # self.__WarnMsgAppend('[输出文档]未知类型：',member['type'],'暂用名称',memtype)
                     number = member.get('number')
                     if number is not None:
                         for n in reversed(number):
@@ -350,14 +341,10 @@ class CElements:
                     anonystr += ')\n'
                     result += anonystr
                 result = result + memberstr + '\n'
-        for unknow_item in self.unknow_items:
-            print('[输出文档]未找到定义：',unknow_item)
+       
         with open(filename,'w',encoding='utf-8') as outfile:
             outfile.write(result)
 
 '''
-a tough format:
-    # bad style: printf("/*"); printf("*/");
-a confused and bad re: 
-    pattern_include_item1 = re.compile('(?:typedef )?(?:struct|union|enum).*{.*} ?' + unknow_item + ';',re.DOTALL)
+在第一遍查找总元素时，不再使用RE表达式，避免了以下情况
 '''

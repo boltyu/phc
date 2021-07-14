@@ -1,0 +1,51 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Python: Current File",
+				"type": "python",
+				"request": "launch",
+				"program": "__main__.py",
+				// "args": ["ventest"],
+				"console": "integratedTerminal"
+			}
+		],
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "run python",
+				"type": "shell",
+				"group": "build",
+				"command": "python3. ",
+				"windows":{
+					"command": "py ."
+				}
+			},
+			{
+				"label": "run server",
+				"type": "shell",
+				"group":{
+					"kind": "build",
+					"isDefault": true
+				},	
+				"command": "python3 -m flask run --host=0.0.0.0 --port=56768",
+				"windows":{
+					"command": "flask run --host=0.0.0.0 --port=56768"
+				}
+			}
+		]
+	},
+	"settings": {
+		"editor.tabSize": 4,
+		"editor.insertSpaces": true,
+		"python.pythonPath": "E:\\ProgramFiles\\Python39\\python.exe",
+	}
+}
