@@ -5,16 +5,17 @@
   <link rel="stylesheet" type="text/css" href="webfiles/app.css">
 </head>
 <body>
- <div id="upload_header">
+<div id="upload_header">
   <form class="upload-form">
     <p>选择头文件或拖拽文件至此</p>
-    <input type="file" id="fileElem" multiple accept=".h" onchange="handleFiles(this.files)">
+    <input type="file" id="fileElem" multiple accept=".h" onchange="uploadFiles(this.files)">
     <label class="button" for="fileElem">选择头文件</label>
   </form>
 </div>
 <div id="code_block">
+  <textarea id="code_area">
 
-
+  </textarea>
 </div>
 </body>
   <script src="webfiles/app.js"></script>

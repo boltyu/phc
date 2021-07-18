@@ -46,6 +46,6 @@
 	"settings": {
 		"editor.tabSize": 4,
 		"editor.insertSpaces": true,
-		"python.pythonPath": "E:\\ProgramFiles\\Python39\\python.exe",
+		"python.pythonPath": "D:\\Program Files\\Python3\\python.exe",
 	}
 }

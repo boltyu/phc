@@ -22,9 +22,9 @@ function unhighlight(e) {
     dropArea.classList.remove('highlight')
 }
 function handleDrop(e){
-    uploadFile(e.dataTransfer.files)
+    uploadFiles(e.dataTransfer.files)
 }
-function uploadFile(files) {
+function uploadFiles(files) {
     let url = 'headerfile'
     let formData = new FormData()
     let filecount = 0
@@ -46,8 +46,8 @@ function uploadFile(files) {
         return blob.text()
     })
     .then(text=> {
-        let code_block = document.getElementById('code_block')
-        code_block.innerText = text
+        let code_block = document.getElementById('code_area')
+        code_block.innerHTML = text
     })
     .catch(() => { /* Error. Inform the user */ })
 }

@@ -6,7 +6,7 @@ import copy
 indentStr = '    ' # 缩进字符默认使用四个空格
 
 class CElements:
-    __typedict = {   # 类型转换字典
+    __typedict =  {   # 类型转换字典
         'VIM_U32':'c_uint', 'VIM_BOOL':'c_uint', 'VIM_U8':'c_byte', 'VIM_CHAR':'c_byte', 'VIM_S32':'c_int', 'VIM_FR32':'c_uint', 'VIM_VOID*':'c_void_p',
         'VIM_DOUBLE':'c_double', 'VIM_FLOAT':'c_float', 'VIM_U64':'c_longlong','VIM_U16':'c_short',
         'unsigned long':'c_long',
@@ -15,14 +15,17 @@ class CElements:
         'VB_POOL':'c_uint',
         'VIM_CHAR*':'c_char_p',
         'VIM_U8*':'c_char_p',
-        'void*':'c_void_p'
+        'VIM_S8':'c_ubyte',
+        'VIM_S16':'c_short',
+        'void*':'c_void_p',
+        'char':'c_byte'
     }
+    __convertdict = {}
     __items = [] # items包含了从文件中识别到的所有struct union enum
     __unknow_items = set() # 类型未知/定义未找到的struct union enum的名称
     __tbd_items = set() 
 
     __warn_msg = ''
-    __err_msg = ''
 
     def __WarnMsgAppend(self,*arg):
         for i in arg:
@@ -47,15 +50,20 @@ class CElements:
         return newText
     def __LoadFromDir(self,directory):
         headerText = ''
-        dir_current = directory
         filecount = 0
         cmd_preprocess = 'clang -E '
-        for filename in os.listdir(dir_current):
+        includestr = ''
+        for filename in os.listdir(directory):
             if filename[-2:] == '.h':           # 删除此行将不筛选.h文件
-                filename = dir_current + os.sep + filename
-                cmd_preprocess += filename + ' '
+                filename = directory + os.sep + filename
+                if filename[-5:] == 'vim.h':
+                    includestr = '#include "'+filename+'"\n' + includestr
+                else:
+                    includestr = includestr + '#include "'+filename+'"\n'
                 filecount += 1
-        cmd_preprocess += '> total.h'
+        with open('all.h', 'w') as includefile:
+            includefile.write(includestr)
+        cmd_preprocess += ' all.h > total.h'
         if filecount == 0 :
             self.__WarnMsgAppend("没有找到.h文件")
             return None
@@ -66,14 +74,16 @@ class CElements:
         except UnicodeDecodeError as e:
             with open('total.h','r',encoding='gbk') as f:
                 headerText += f.read(1024*1000*10)
-        except Exception as e:
-            self.__WarnMsgAppend(e)
-            exit(self.__warn_msg)
+            # exit(self.__warn_msg)
         return self.__FormatDocument(headerText)
 
     # 在初始化函数中，首先查找其所有顶级元素，并保存在item中
     def __init__(self,directory):
-        self.__cur_dir = directory
+        self.__convertdict = copy.copy(self.__typedict)
+        self.__items = [] # items包含了从文件中识别到的所有struct union enum
+        self.__unknow_items = set() # 类型未知/定义未找到的struct union enum的名称
+        self.__tbd_items = set() 
+        self.__warn_msg = ''
         headerText = self.__LoadFromDir(directory)
         if headerText is not None:
             self.__FindElements(headerText)
@@ -99,15 +109,18 @@ class CElements:
                     if ',' in n:
                         namelist = n.split(',')
                         for name in namelist:
-                            self.__typedict[name.replace('\t','').strip()] = self.__typedict[tn]
+                            self.__convertdict[name.replace('\t','').strip()] = self.__convertdict[tn]
                     else:
-                        self.__typedict[n] = self.__typedict[tn]
+                        self.__convertdict[n] = self.__convertdict[tn]
                     continue
                 item['name'] = result['name']
                 t,tn = '',''
-                if len(result['type']) < 6:
+                if 'annoy' in result: # a anonymous element
                     item['type'] = result['type']
-                    item['typename'] = result['typename']
+                    try:
+                        item['typename'] = result['typename']
+                    except KeyError:
+                        pass
                 else:
                     try:
                         t,tn = pattern_element_type_type.findall(result['type'])[0]
@@ -122,19 +135,23 @@ class CElements:
                     newtype = 'PY_' + item['name']
                 if tn != '':
                     item['typename'] = tn
-                    self.__typedict[item['typename']] = newtype
-                    self.__typedict[item['name']] = newtype
+                    self.__convertdict[item['typename']] = newtype
+                    self.__convertdict[item['name']] = newtype
                 else:
                     try:
-                        self.__typedict[item['typename']] = 'PY_' + item['typename']
+                        self.__convertdict[item['typename']] = 'PY_' + item['typename']
+                        if len(item['type']) > 6:
+                            self.__convertdict[item['type']] = 'PY_' + item['typename']
                     except KeyError:
-                        self.__typedict[item['name']] = newtype
+                        self.__convertdict[item['name']] = newtype
 
                 if item['type'] == 'enum':
                     item['members'] = self.__ParseEnum(result['content'])
                 else:
                     item['members'] = self.__ParseStruct(result['content'])
                 try:
+                    if 'annoy' in result:
+                        self.__unknow_items.remove(item['type'])
                     self.__unknow_items.remove(item['name'])
                 except KeyError:
                     pass
@@ -165,12 +182,12 @@ class CElements:
                     elif findmode == 1:
                         deepth += 1
                     else:
-                        self.__WarnMsgAppend('err occured while parsing:\n',headerText[start:b])
-                        exit(self.__warn_msg) #
+                        print('err occured while parsing:\n'+headerText[start:b])
+                        # exit(self.__warn_msg) #
                 elif keychar == '}':
                     if findmode == 0:
-                        self.__WarnMsgAppend('err occured while parsing:\n',headerText[start:b])
-                        exit(self.__warn_msg) # } without {
+                        print('err occured while parsing:\n'+headerText[start:b])
+                        # exit(self.__warn_msg) # } without {
                     elif findmode == 1:
                         if deepth == 0:
                             item['content'] = headerText[start_content:a]
@@ -188,11 +205,19 @@ class CElements:
                     else:
                         un_flag += 1
                         if un_flag > 10000:
-                            self.__WarnMsgAppend('find element excced max tries')
-                            exit(self.__warn_msg)
-            if item['name'] == '':  # a annoymouns element
-                item['name'] = item['type'][0:1] + '_' + str(random.random())[2:8]
+                            print('find element excced max tries')
+                            # exit(self.__warn_msg)
+            typestr = item.get('type','')
+            if item['name'] == '' or typestr == 'struct' or typestr == 'union':  # a annoymouns element
+                if item['name'] == '':
+                    newname = ''
+                    while newname == '':
+                        newname = item['type'][0:1] + '_' + str(random.random())[2:8]
+                        if newname.upper() in self.__convertdict:
+                            newname = ''
+                    item['name'] = newname
                 item['typename'] = item['name'].upper()
+                item['annoy'] = True
                 replaceList.append((headerText[start:b],item['typename'] + ' ' + item['name'] + ';'))
             resultlist.append(item)
         for old,new in replaceList:
@@ -203,8 +228,8 @@ class CElements:
     def __ParseStruct(self,text): # also works for Union
         if '{' in text:
             text = self.__FindElements(text)
-        patter_type_name_number = re.compile('((?:struct|enum|union)? *[\w]*[ \*]*) *(\w*) *([\[\]\(\)\w \+\-\*\/]*) *;') 
-        patter_type_typename = re.compile('(struct|enum|union)? *([\w]*[ \*]*)') 
+        patter_type_name_number = re.compile('((?:struct|enum|union|unsigned)? *[\w]*[ \*]*) *(\w*) *([\[\]\(\)\w \+\-\*\/:]*) *;') 
+        patter_type_typename = re.compile('(struct|enum|union|unsigned)? *([\w]*[ \*]*)') 
         pattern_number = re.compile('[\(\[] *(\w+) *[\)\]]')
         memberlist = []
         members = text.split('\n')
@@ -212,30 +237,36 @@ class CElements:
             member = member.strip()
             if member.isspace() == False and member != '':
                 item = {}
-                typename,name,number = '','',''
+                basetype,typename,name,number = '','','',''
                 try:
                     typename,name,number = patter_type_name_number.findall(member)[0]
                     basetype,typename = patter_type_typename.findall(typename)[0] # unpack typename like 'struct XXXX xxxx;'
                 except IndexError:
                     pass
-                numberlist = pattern_number.findall(number.replace(' ',''))
-                if len(numberlist) > 0:
-                    for number in numberlist:
-                        try:
-                            int(number,base=16)
-                        except ValueError:
-                            self.__tbd_items.add(number)
-                    item['number'] = numberlist
+                if ':' in number:
+                    item['bit'] = number.replace(':','').strip()
+                else:
+                    numberlist = pattern_number.findall(number.replace(' ',''))
+                    if len(numberlist) > 0:
+                        for number in numberlist:
+                            try:
+                                int(number,base=16)
+                            except ValueError:
+                                self.__tbd_items.add(number)
+                        item['number'] = numberlist
+                
                 item['name'] = name.replace(' ','')
                 item['type'] = typename.replace(' ','')
                 if basetype != '':
                     item['type'] = basetype.replace(' ','') + ' ' + item['type']
-                if item['type'] not in self.__typedict:
+                if item['name'] == '' and item['type'] == '':
+                    continue
+                if item['type'] not in self.__convertdict:
                     if '*' in item['type']:  # 是否因为星号导致类型没找到
                         typestr = item['type'].replace('*','')
-                        typename = self.__typedict.get(typestr)
+                        typename = self.__convertdict.get(typestr)
                         if typename is not None:
-                            self.__typedict[item['type']] = 'POINTER(' + typename + ')'
+                            self.__convertdict[item['type']] = 'POINTER(' + typename + ')'
                         else:
                             self.__unknow_items.add(item['type'])
                         # item['type'] = item['type'].replace('*','').strip()
@@ -273,77 +304,79 @@ class CElements:
         return memberlist
     
     # 将items内容输出为.py文件
-    def DumpToFile(self,filename):
+    def DumpToStr(self):
         # https://www.python.org/dev/peps/pep-0263/
-        result = '#!/usr/bin/python\n# -*- coding: <utf-8> -*-\n\nfrom ctypes import *\n\n' 
-        self.__WarnMsgAppend('【未找到定义】')
-        for unknow_item in self.__unknow_items:
-            self.__WarnMsgAppend(unknow_item)
-        self.__WarnMsgAppend('\n\n【不确定的值】')
-        for tbd_item in self.__tbd_items:
-            self.__WarnMsgAppend(tbd_item)
-        result += '\'\'\'\n' + self.__warn_msg  + '\n\'\'\'\n\n'
-        for item in self.__items:
-            if item['type'] == 'enum':
-                result = result + 'class ' + 'PY_' + item['name'] + '():\n'
-                memberliststr = indentStr + 'list = iter([ '
-                for member in item['members']:
-                    result = result + indentStr + member['name'] + ' = ' + str(member['val']) 
-                    memberliststr = memberliststr + '(\'' + member['name'] + '\',' + str(member['val']) +'), '
-                    comment =  member.get('comment')
-                    if comment is not None:
-                        result = result + '    # ' + comment
-                    result += '\n'
-                result = result + memberliststr + '])\n' + indentStr + 'def __iter__(self):\n' + indentStr*2 + 'return self.__list\n\n'
-            elif item['type'] == 'struct' or item['type'] == 'union':
-                parentclass = 'Structure'
-                if item['type'] == 'union':
-                    parentclass = 'Union'
-                try:
-                    result = result + 'class ' + self.__typedict[item['name']] + '(' + parentclass +'):\n'
-                except KeyError:
-                    result = result + 'class ' + self.__typedict[item['typename']] + '(' + parentclass +'):\n'
-                anonystr = indentStr + '_anonymous_=('
-                memberstr = indentStr + '_fields_=[\n'
-                memberno = 0
-                anonyno = 0
-                for member in item['members']:
-                    if member['name'] == '' or member['type'] == '':
-                        continue
-                    member['name'] = member['name'].replace(' ','_')
-                    memberno += 1
-                    memberstr = memberstr + indentStr + '(\'' + member['name'] + '\','
-                    memtype = ''
+        if len(self.__unknow_items) > 0 or len(self.__tbd_items) > 0 or self.__warn_msg != '':
+            self.__WarnMsgAppend('【未找到定义】')
+            for unknow_item in self.__unknow_items:
+                self.__WarnMsgAppend(unknow_item)
+            self.__WarnMsgAppend('\n\n【不确定的值】')
+            for tbd_item in self.__tbd_items:
+                self.__WarnMsgAppend(tbd_item)
+            return '\'\'\'\n' + self.__warn_msg  + '\n\'\'\'\n\n'
+        else:
+            result = '#!/usr/bin/python\n# -*- coding: <utf-8> -*-\n\nfrom ctypes import *\n\n' 
+            for item in self.__items:
+                if item['type'] == 'enum':
+                    result = result + 'class ' + 'PY_' + item['name'] + '():\n'
+                    memberliststr = indentStr + 'list = iter([ '
+                    for member in item['members']:
+                        result = result + indentStr + member['name'] + ' = ' + str(member['val']) 
+                        memberliststr = memberliststr + '(\'' + member['name'] + '\',' + str(member['val']) +'), '
+                        comment =  member.get('comment')
+                        if comment is not None:
+                            result = result + '    # ' + comment
+                        result += '\n'
+                    result = result + memberliststr + '])\n' + indentStr + 'def __iter__(self):\n' + indentStr*2 + 'return self.__list\n\n'
+                elif item['type'] == 'struct' or item['type'] == 'union':
+                    parentclass = 'Structure'
+                    if item['type'] == 'union':
+                        parentclass = 'Union'
                     try:
-                        memtype = self.__typedict[member['type']]
-                        if len(member['type']) == 6 and member['type'][1] == '_':
-                            anonyno += 1
-                            anonystr =  anonystr + '\'' + member['name'] + '\', '
+                        result = result + 'class ' + self.__convertdict[item['name']] + '(' + parentclass +'):\n'
                     except KeyError:
-                        memtype = 'PY_'+member['type']
-                        # self.__WarnMsgAppend('[输出文档]未知类型：',member['type'],'暂用名称',memtype)
-                    number = member.get('number')
-                    if number is not None:
-                        for n in reversed(number):
-                            memtype = '(' + memtype + '*' + str(n) + ')'
-                    memberstr += memtype
-                    if memberno == len(item['members']):
-                        memberstr = memberstr + ')]'
-                    else:
-                        memberstr = memberstr + '),'
-                    comment =  member.get('comment')
-                    if comment is not None:
-                        memberstr = memberstr + '    # ' + comment
-                    memberstr += '\n'
-                if memberno == 0:
-                    memberstr += indentStr + ']\n'
-                if anonyno > 0:
-                    anonystr += ')\n'
-                    result += anonystr
-                result = result + memberstr + '\n'
-       
-        with open(filename,'w',encoding='utf-8') as outfile:
-            outfile.write(result)
+                        result = result + 'class ' + self.__convertdict[item['typename']] + '(' + parentclass +'):\n'
+                    anonystr = indentStr + '_anonymous_=('
+                    memberstr = indentStr + '_fields_=[\n'
+                    memberno = 0
+                    anonyno = 0
+                    for member in item['members']:
+                        if member['name'] == '' or member['type'] == '':
+                            continue
+                        member['name'] = member['name'].replace(' ','_')
+                        memberno += 1
+                        memberstr = memberstr + indentStr + '(\'' + member['name'] + '\', '
+                        memtype = ''
+                        try:
+                            memtype = self.__convertdict[member['type']]
+                            if len(member['type']) == 6 and member['type'][1] == '_':
+                                anonyno += 1
+                                anonystr =  anonystr + '\'' + member['name'] + '\', '
+                        except KeyError:
+                            memtype = 'PY_'+member['type']
+                            # self.__WarnMsgAppend('[输出文档]未知类型：',member['type'],'暂用名称',memtype)
+                        bitnum = member.get('bit')
+                        if bitnum is not None:
+                            memtype = memtype + ', ' + bitnum
+                        else:
+                            number = member.get('number')
+                            if number is not None:
+                                for n in reversed(number):
+                                    memtype = '(' + memtype + ' * ' + str(n) + ')'
+                        memberstr += memtype
+                        if memberno == len(item['members']):
+                            memberstr = memberstr + ')]'
+                        else:
+                            memberstr = memberstr + '),'
+                        memberstr += '\n'
+                    if memberno == 0:
+                        memberstr += indentStr + ']\n'
+                    if anonyno > 0:
+                        anonystr += ')\n'
+                        result += anonystr
+                    result = result + memberstr + '\n'
+            return result
+            
 
 '''
 在第一遍查找总元素时，不再使用RE表达式，避免了以下情况

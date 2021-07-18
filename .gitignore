@@ -1,6 +1,8 @@
 */__pycache__
 *.pyc
-include/*
+include
 *.h
 *.txt
 out.py
+.vscode
+tmp
