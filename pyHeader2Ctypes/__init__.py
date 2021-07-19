@@ -21,8 +21,9 @@ class CElements:
         'char':'c_byte'
     }
     __convertdict = {}
-    __items = [] # items包含了从文件中识别到的所有struct union enum
-    __unknow_items = set() # 类型未知/定义未找到的struct union enum的名称
+    __items = [] # items包含了从指定文件中查找到的所有struct union enum
+    __unknow_items = set() # 类型未知或定义未找到的struct union enum的名称
+    __anonymous_items = set()
     __tbd_items = set() 
 
     __warn_msg = ''
@@ -80,9 +81,10 @@ class CElements:
     # 在初始化函数中，首先查找其所有顶级元素，并保存在item中
     def __init__(self,directory):
         self.__convertdict = copy.copy(self.__typedict)
-        self.__items = [] # items包含了从文件中识别到的所有struct union enum
-        self.__unknow_items = set() # 类型未知/定义未找到的struct union enum的名称
+        self.__items = []
+        self.__unknow_items = set()
         self.__tbd_items = set() 
+        self.__anonymous_items = set()
         self.__warn_msg = ''
         headerText = self.__LoadFromDir(directory)
         if headerText is not None:
@@ -115,7 +117,7 @@ class CElements:
                     continue
                 item['name'] = result['name']
                 t,tn = '',''
-                if 'annoy' in result: # a anonymous element
+                if 'anony' in result: # a anonymous element
                     item['type'] = result['type']
                     try:
                         item['typename'] = result['typename']
@@ -144,13 +146,13 @@ class CElements:
                             self.__convertdict[item['type']] = 'PY_' + item['typename']
                     except KeyError:
                         self.__convertdict[item['name']] = newtype
-
                 if item['type'] == 'enum':
                     item['members'] = self.__ParseEnum(result['content'])
                 else:
                     item['members'] = self.__ParseStruct(result['content'])
                 try:
-                    if 'annoy' in result:
+                    if 'anony' in result:
+                        self.__anonymous_items.add(self.__convertdict[item['typename']])
                         self.__unknow_items.remove(item['type'])
                     self.__unknow_items.remove(item['name'])
                 except KeyError:
@@ -208,7 +210,7 @@ class CElements:
                             print('find element excced max tries')
                             # exit(self.__warn_msg)
             typestr = item.get('type','')
-            if item['name'] == '' or typestr == 'struct' or typestr == 'union':  # a annoymouns element
+            if item['name'] == '' or typestr == 'struct' or typestr == 'union':  # a anonymouns element
                 if item['name'] == '':
                     newname = ''
                     while newname == '':
@@ -217,7 +219,7 @@ class CElements:
                             newname = ''
                     item['name'] = newname
                 item['typename'] = item['name'].upper()
-                item['annoy'] = True
+                item['anony'] = True
                 replaceList.append((headerText[start:b],item['typename'] + ' ' + item['name'] + ';'))
             resultlist.append(item)
         for old,new in replaceList:
@@ -278,7 +280,7 @@ class CElements:
 
     # 解析一个Enum中的所有元素
     def __ParseEnum(self,text):
-        pattern_name_val = re.compile('([A-Za-z_]\w*)[ =]*([0-9x]*) *,')
+        pattern_name_val = re.compile('([A-Za-z_]\w*)[ =]*(\w*) *,')
         __item_no__ = 0
         members = text.split('\n')
         memberlist = []
@@ -305,7 +307,6 @@ class CElements:
     
     # 将items内容输出为.py文件
     def DumpToStr(self):
-        # https://www.python.org/dev/peps/pep-0263/
         if len(self.__unknow_items) > 0 or len(self.__tbd_items) > 0 or self.__warn_msg != '':
             self.__WarnMsgAppend('【未找到定义】')
             for unknow_item in self.__unknow_items:
@@ -315,6 +316,7 @@ class CElements:
                 self.__WarnMsgAppend(tbd_item)
             return '\'\'\'\n' + self.__warn_msg  + '\n\'\'\'\n\n'
         else:
+            # https://www.python.org/dev/peps/pep-0263/
             result = '#!/usr/bin/python\n# -*- coding: <utf-8> -*-\n\nfrom ctypes import *\n\n' 
             for item in self.__items:
                 if item['type'] == 'enum':
@@ -349,7 +351,7 @@ class CElements:
                         memtype = ''
                         try:
                             memtype = self.__convertdict[member['type']]
-                            if len(member['type']) == 6 and member['type'][1] == '_':
+                            if memtype in self.__anonymous_items:
                                 anonyno += 1
                                 anonystr =  anonystr + '\'' + member['name'] + '\', '
                         except KeyError:
@@ -377,7 +379,3 @@ class CElements:
                     result = result + memberstr + '\n'
             return result
             
-
-'''
-在第一遍查找总元素时，不再使用RE表达式，避免了以下情况
-'''
