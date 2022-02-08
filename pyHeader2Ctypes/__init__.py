@@ -18,7 +18,8 @@ class CElements:
         'VIM_S8':'c_ubyte',
         'VIM_S16':'c_short',
         'void*':'c_void_p',
-        'char':'c_byte'
+        'char':'c_char',
+        'unsigned char': 'c_ubyte'
     }
     __convertdict = {}
     __items = [] # items包含了从指定文件中查找到的所有struct union enum
